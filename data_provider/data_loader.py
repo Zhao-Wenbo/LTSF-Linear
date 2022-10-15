@@ -10,6 +10,36 @@ import warnings
 
 warnings.filterwarnings('ignore')
 
+'''
+class StandardScaler:
+    def __init__(self, mean=None, std=None, epsilon=1e-9):
+        """Standard Scaler.
+        The class can be used to normalize PyTorch Tensors using native functions. The module does not expect the
+        tensors to be of any specific shape; as long as the features are the last dimension in the tensor, the module
+        will work fine.
+        :param mean: The mean of the features. The property will be set after a call to fit.
+        :param std: The standard deviation of the features. The property will be set after a call to fit.
+        :param epsilon: Used to avoid a Division-By-Zero exception.
+        """
+        self.mean = mean
+        self.std = std
+        self.epsilon = epsilon
+
+    def fit(self, values):
+        dims = list(range(values.dim() - 1))
+        self.mean = torch.mean(values, dim=dims)
+        self.std = torch.std(values, dim=dims)
+
+    def transform(self, values):
+        return (values - self.mean) / (self.std + self.epsilon)
+
+    def inverse_transform(self, values):
+        return values * (self.std + self.epsilon) + self.mean
+
+    def fit_transform(self, values):
+        self.fit(values)
+        return self.transform(values)
+'''
 
 class Dataset_ETT_hour(Dataset):
     def __init__(self, root_path, flag='train', size=None,
@@ -254,6 +284,9 @@ class Dataset_Custom(Dataset):
         else:
             data = df_data.values
 
+        self.scaler_mean = torch.tensor(self.scaler.mean_, requires_grad=False)
+        self.scaler_std = torch.tensor(self.scaler.scale_, requires_grad=False)
+
         df_stamp = df_raw[['date']][border1:border2]
         df_stamp['date'] = pd.to_datetime(df_stamp.date)
         if self.timeenc == 0:
@@ -266,6 +299,119 @@ class Dataset_Custom(Dataset):
             data_stamp = time_features(pd.to_datetime(df_stamp['date'].values), freq=self.freq)
             data_stamp = data_stamp.transpose(1, 0)
 
+        data = np.concatenate((data[border1:border2], data_stamp), axis=1)
+        self.data_x = data # [border1:border2]
+        self.data_y = data # [border1:border2]
+        self.data_stamp = data_stamp
+
+    def __getitem__(self, index):
+        s_begin = index
+        s_end = s_begin + self.seq_len
+        r_begin = s_end - self.label_len
+        r_end = r_begin + self.label_len + self.pred_len
+
+        seq_x = self.data_x[s_begin:s_end]
+        seq_y = self.data_y[r_begin:r_end]
+        seq_x_mark = self.data_stamp[s_begin:s_end]
+        seq_y_mark = self.data_stamp[r_begin:r_end]
+
+        return seq_x, seq_y, seq_x_mark, seq_y_mark, (self.scaler_mean, self.scaler_std)
+
+    def __len__(self):
+        return len(self.data_x) - self.seq_len - self.pred_len + 1
+
+    def inverse_transform(self, data):
+        return self.scaler.inverse_transform(data)
+
+
+class Dataset_Electricity(Dataset):
+    def __init__(self, dataframe, flag='train', size=None, features='S', user=1, 
+                 target='sum_per_day', scale=True, timeenc=0, freq='D'):
+        # size [seq_len, label_len, pred_len]
+        # info
+        if size == None:
+            self.seq_len = 24 * 4 * 4
+            self.label_len = 24 * 4
+            self.pred_len = 24 * 4
+        else:
+            self.seq_len = size[0]
+            self.label_len = size[1]
+            self.pred_len = size[2]
+        # init
+        assert flag in ['train', 'test', 'val']
+        type_map = {'train': 0, 'val': 1, 'test': 2}
+        self.set_type = type_map[flag]
+
+        self.features = features
+        self.target = target
+        self.scale = scale
+        self.timeenc = timeenc
+        self.freq = freq
+        self.user = user
+
+        # self.root_path = root_path
+        # self.data_path = data_path
+        self.dataframe = dataframe
+        self.__read_data__()
+
+    def __read_data__(self):
+        self.scaler = StandardScaler()
+        df_raw = self.dataframe[self.dataframe.user == self.user]
+                # pd.read_csv(os.path.join(self.root_path,
+                #                          self.data_path))
+
+        '''
+        df_raw.columns: ['date', ...(other features), target feature]
+        '''
+        '''cols = list(df_raw.columns)
+        cols.remove(self.target)
+        cols.remove('date')
+        df_raw = df_raw[['date'] + cols + [self.target]]'''
+        # print(cols)
+        num_train = int(len(df_raw) * 0.7)
+        num_test = int(len(df_raw) * 0.2)
+        num_vali = len(df_raw) - num_train - num_test
+
+        border1s = [0, num_train - self.seq_len, len(df_raw) - num_test - self.seq_len]
+        border2s = [num_train, num_train + num_vali, len(df_raw)]
+        border1 = border1s[self.set_type]
+        border2 = border2s[self.set_type]
+
+        if self.features == 'M' or self.features == 'MS':
+            cols_data = df_raw.columns[1:]
+            df_data = df_raw[cols_data]
+        elif self.features == 'S':
+            df_data = df_raw[[self.target]]
+
+        # print(self.user, df_data.shape)
+
+        if self.scale:
+            train_data = df_data[border1s[0]:border2s[0]]
+            self.scaler.fit(train_data.values)
+            # print(self.scaler.mean_)
+            # exit()
+            data = self.scaler.transform(df_data.values)
+        else:
+            data = df_data.values
+        
+
+        self.scaler_mean = torch.tensor(self.scaler.mean_, requires_grad=False)
+        self.scaler_std = torch.tensor(self.scaler.scale_, requires_grad=False)
+
+        df_stamp = df_raw[['date']][border1:border2]
+        df_stamp['date'] = pd.to_datetime(df_stamp.date)
+        if self.timeenc == 0:
+            df_stamp['month'] = df_stamp.date.apply(lambda row: row.month, 1)
+            df_stamp['day'] = df_stamp.date.apply(lambda row: row.day, 1)
+            df_stamp['weekday'] = df_stamp.date.apply(lambda row: row.weekday(), 1)
+            df_stamp['hour'] = df_stamp.date.apply(lambda row: row.hour, 1)
+            data_stamp = df_stamp.drop(['date'], 1).values
+        elif self.timeenc == 1:
+            data_stamp = time_features(pd.to_datetime(df_stamp['date'].values), freq=self.freq)
+            data_stamp = data_stamp.transpose(1, 0)
+
+        # data = np.concatenate((data[border1:border2], data_stamp), axis=1)
+        # self.data_x = np.concatenate((data[border1:border2], data_stamp), axis=1)
         self.data_x = data[border1:border2]
         self.data_y = data[border1:border2]
         self.data_stamp = data_stamp
@@ -281,13 +427,30 @@ class Dataset_Custom(Dataset):
         seq_x_mark = self.data_stamp[s_begin:s_end]
         seq_y_mark = self.data_stamp[r_begin:r_end]
 
-        return seq_x, seq_y, seq_x_mark, seq_y_mark
+        return seq_x, seq_y, seq_x_mark, seq_y_mark, (self.scaler_mean, self.scaler_std)
 
     def __len__(self):
         return len(self.data_x) - self.seq_len - self.pred_len + 1
 
     def inverse_transform(self, data):
         return self.scaler.inverse_transform(data)
+
+class Dataset_All(Dataset):
+    def __init__(self, dataframe, flag='train', size=None, features='S',
+                 target='sum_per_day', scale=True, timeenc=0, freq='D'):
+        self.dataset_all = []
+        self.n_user = dataframe.user.unique().__len__()
+        for user in dataframe.user.unique():
+            self.dataset_all.append(Dataset_Electricity(dataframe, flag, size, features, user, target, scale, timeenc, freq))
+
+    def __getitem__(self, index):
+        per_len = len(self.dataset_all[0])
+        idx = index // per_len
+        rem = index % per_len
+        return self.dataset_all[idx][rem]
+
+    def __len__(self):
+        return self.n_user * len(self.dataset_all[0])
     
 
 class Dataset_Pred(Dataset):

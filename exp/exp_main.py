@@ -8,6 +8,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch import optim
+import pandas as pd
 
 import os
 import time
@@ -16,11 +17,18 @@ import warnings
 import matplotlib.pyplot as plt
 import numpy as np
 
+from data_provider.data_loader import Dataset_Electricity
+from dataset.forcast import get_electricity_df
+from torch.utils.data import DataLoader
+
 warnings.filterwarnings('ignore')
 
 class Exp_Main(Exp_Basic):
     def __init__(self, args):
         super(Exp_Main, self).__init__(args)
+        # self.df = get_electricity_df() if args.data == 'other' else None
+        self.df = pd.read_csv('./dataset/all.csv')
+        self.users = self.df.user.unique() if args.data == 'otehr' else None
 
     def _build_model(self):
         model_dict = {
@@ -38,7 +46,7 @@ class Exp_Main(Exp_Basic):
         return model
 
     def _get_data(self, flag):
-        data_set, data_loader = data_provider(self.args, flag)
+        data_set, data_loader = data_provider(self.args, flag, self.df)
         return data_set, data_loader
 
     def _select_optimizer(self):
@@ -46,14 +54,29 @@ class Exp_Main(Exp_Basic):
         return model_optim
 
     def _select_criterion(self):
-        criterion = nn.MSELoss()
+        # criterion = nn.MSELoss()
+        def MAPE(pred_batch, y_batch):
+            mape = torch.mean(torch.abs(pred_batch - y_batch) / (y_batch + 1e-1))
+            # print(inverse(y_batch))
+            # print((inverse(y_batch) >= 0).all())
+            # print(mape)
+            return mape
+        # criterion = nn.MSELoss()
+        criterion = MAPE
         return criterion
 
     def vali(self, vali_data, vali_loader, criterion):
+        '''
+        scaler = vali_data.scaler
+        scaler_mean = torch.tensor(scaler.mean_, requires_grad=False)
+        scaler_std = torch.tensor(scaler.scale_, requires_grad=False)
+        inverse_transform = lambda values: values * scaler_std + scaler_mean
+        '''
+
         total_loss = []
         self.model.eval()
         with torch.no_grad():
-            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(vali_loader):
+            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark, scale_param) in enumerate(vali_loader):
                 batch_x = batch_x.float().to(self.device)
                 batch_y = batch_y.float()
 
@@ -75,7 +98,7 @@ class Exp_Main(Exp_Basic):
                                 outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
                 else:
                     if 'Linear' in self.args.model:
-                        outputs = self.model(batch_x)
+                        outputs = self.model(batch_x, batch_x_mark)
                     else:
                         if self.args.output_attention:
                             outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)[0]
@@ -88,7 +111,10 @@ class Exp_Main(Exp_Basic):
                 pred = outputs.detach().cpu()
                 true = batch_y.detach().cpu()
 
-                loss = criterion(pred, true)
+                inverse = lambda batch_y: batch_y[:, 0, :] * scale_param[1] + scale_param[0]
+                loss = criterion(inverse(pred), inverse(true))
+                # loss = criterion(pred, true)
+                # loss = criterion(pred, true, inverse_transform)
 
                 total_loss.append(loss)
         total_loss = np.average(total_loss)
@@ -99,6 +125,11 @@ class Exp_Main(Exp_Basic):
         train_data, train_loader = self._get_data(flag='train')
         vali_data, vali_loader = self._get_data(flag='val')
         test_data, test_loader = self._get_data(flag='test')
+
+        '''scaler = train_data.scaler
+        scaler_mean = torch.tensor(scaler.mean_, requires_grad=False)
+        scaler_std = torch.tensor(scaler.scale_, requires_grad=False)
+        inverse_transform = lambda values: values * scaler_std + scaler_mean'''
 
         path = os.path.join(self.args.checkpoints, setting)
         if not os.path.exists(path):
@@ -121,7 +152,10 @@ class Exp_Main(Exp_Basic):
 
             self.model.train()
             epoch_time = time.time()
-            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(train_loader):
+            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark, scale_param) in enumerate(train_loader):
+
+                # print(batch_x.shape, batch_x_mark.shape)
+                # print('*****', (inverse_transform(batch_y) >= -0.01).all())
                 iter_count += 1
                 model_optim.zero_grad()
                 batch_x = batch_x.float().to(self.device)
@@ -152,7 +186,7 @@ class Exp_Main(Exp_Basic):
                         train_loss.append(loss.item())
                 else:
                     if 'Linear' in self.args.model:
-                            outputs = self.model(batch_x)
+                            outputs = self.model(batch_x, batch_x_mark)
                     else:
                         if self.args.output_attention:
                             outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)[0]
@@ -163,10 +197,14 @@ class Exp_Main(Exp_Basic):
                     f_dim = -1 if self.args.features == 'MS' else 0
                     outputs = outputs[:, -self.args.pred_len:, f_dim:]
                     batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
-                    loss = criterion(outputs, batch_y)
+
+                    inverse = lambda batch_y: batch_y[:, 0, :] * scale_param[1] + scale_param[0]
+                    loss = criterion(inverse(outputs), inverse(batch_y))
+                    # loss = criterion(outputs, batch_y)
+                    # loss = criterion(outputs, batch_y, inverse_transform)
                     train_loss.append(loss.item())
 
-                if (i + 1) % 100 == 0:
+                if (i + 1) % 1000 == 0:
                     print("\titers: {0}, epoch: {1} | loss: {2:.7f}".format(i + 1, epoch + 1, loss.item()))
                     speed = (time.time() - time_now) / iter_count
                     left_time = speed * ((self.args.train_epochs - epoch) * train_steps - i)
@@ -217,7 +255,7 @@ class Exp_Main(Exp_Basic):
 
         self.model.eval()
         with torch.no_grad():
-            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(test_loader):
+            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark, scale_param) in enumerate(test_loader):
                 batch_x = batch_x.float().to(self.device)
                 batch_y = batch_y.float().to(self.device)
 

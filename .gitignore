@@ -1,0 +1,6 @@
+*__pycache__*
+*.DS_Store
+logs*
+dataset
+test.py
+test_results*

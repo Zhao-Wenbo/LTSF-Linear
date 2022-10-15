@@ -1,4 +1,4 @@
-from data_provider.data_loader import Dataset_ETT_hour, Dataset_ETT_minute, Dataset_Custom, Dataset_Pred
+from data_provider.data_loader import Dataset_ETT_hour, Dataset_ETT_minute, Dataset_Custom, Dataset_Pred, Dataset_All
 from torch.utils.data import DataLoader
 
 data_dict = {
@@ -7,10 +7,11 @@ data_dict = {
     'ETTm1': Dataset_ETT_minute,
     'ETTm2': Dataset_ETT_minute,
     'custom': Dataset_Custom,
+    'other': Dataset_All
 }
 
 
-def data_provider(args, flag):
+def data_provider(args, flag, dataframe=None):
     Data = data_dict[args.data]
     timeenc = 0 if args.embed != 'timeF' else 1
 
@@ -31,16 +32,27 @@ def data_provider(args, flag):
         batch_size = args.batch_size
         freq = args.freq
 
-    data_set = Data(
-        root_path=args.root_path,
-        data_path=args.data_path,
-        flag=flag,
-        size=[args.seq_len, args.label_len, args.pred_len],
-        features=args.features,
-        target=args.target,
-        timeenc=timeenc,
-        freq=freq
-    )
+    if args.data != 'other':
+        data_set = Data(
+            root_path=args.root_path,
+            data_path=args.data_path,
+            flag=flag,
+            size=[args.seq_len, args.label_len, args.pred_len],
+            features=args.features,
+            target=args.target,
+            timeenc=timeenc,
+            freq=freq
+        )
+    else:
+        data_set = Dataset_All(
+            dataframe=dataframe,
+            flag=flag,
+            size=[args.seq_len, args.label_len, args.pred_len],
+            features=args.features,
+            target='sum_per_day',
+            timeenc=timeenc,
+            freq=freq
+        )
     print(flag, len(data_set))
     data_loader = DataLoader(
         data_set,

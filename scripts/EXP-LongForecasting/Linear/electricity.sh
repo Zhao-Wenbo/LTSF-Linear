@@ -8,25 +8,27 @@ if [ ! -d "./logs/LongForecasting" ]; then
 fi
 seq_len=336
 model_name=DLinear
+data_path=electricity/electricity.csv
 
-python -u run_longExp.py \
+python run_longExp.py \
   --is_training 1 \
   --root_path ./dataset/ \
-  --data_path electricity.csv \
+  --data_path $data_path \
   --model_id Electricity_$seq_len'_'96 \
   --model $model_name \
   --data custom \
-  --features M \
+  --features S \
   --seq_len $seq_len \
   --pred_len 96 \
   --enc_in 321 \
   --des 'Exp' \
-  --itr 1 --batch_size 16  --learning_rate 0.001 >logs/LongForecasting/$model_name'_'electricity_$seq_len'_'96.log 
+  --itr 1 --batch_size 16  --learning_rate 0.0001 # >logs/LongForecasting/$model_name'_'electricity_$seq_len'_'96.log 
 
+<<comment
 python -u run_longExp.py \
   --is_training 1 \
   --root_path ./dataset/ \
-  --data_path electricity.csv \
+  --data_path $data_path \
   --model_id Electricity_$seq_len'_'192 \
   --model $model_name \
   --data custom \
@@ -40,7 +42,7 @@ python -u run_longExp.py \
 python -u run_longExp.py \
   --is_training 1 \
   --root_path ./dataset/ \
-  --data_path electricity.csv \
+  --data_path $data_path \
   --model_id Electricity_$seq_len'_'336 \
   --model $model_name \
   --data custom \
@@ -54,7 +56,7 @@ python -u run_longExp.py \
 python -u run_longExp.py \
   --is_training 1 \
   --root_path ./dataset/ \
-  --data_path electricity.csv \
+  --data_path $data_path \
   --model_id Electricity_$seq_len'_'720 \
   --model $model_name \
   --data custom \
@@ -64,3 +66,4 @@ python -u run_longExp.py \
   --enc_in 321 \
   --des 'Exp' \
   --itr 1 --batch_size 16  --learning_rate 0.001  >logs/LongForecasting/$model_name'_'electricity_$seq_len'_'720.log  
+comment
