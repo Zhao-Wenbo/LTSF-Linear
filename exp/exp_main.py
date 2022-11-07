@@ -1,7 +1,9 @@
+from http import server
+from operator import index
 from data_provider.data_factory import data_provider
 from exp.exp_basic import Exp_Basic
 from models import Informer, Autoformer, Transformer, DLinear, Linear, NLinear
-from utils.tools import EarlyStopping, adjust_learning_rate, visual, test_params_flop
+from utils.tools import EarlyStopping, visual, test_params_flop, adjust_learning_rate
 from utils.metrics import metric
 
 import numpy as np
@@ -9,6 +11,7 @@ import torch
 import torch.nn as nn
 from torch import optim
 import pandas as pd
+
 
 import os
 import time
@@ -20,6 +23,7 @@ import numpy as np
 from data_provider.data_loader import Dataset_Electricity
 from dataset.forcast import get_electricity_df
 from torch.utils.data import DataLoader
+import seaborn as sns
 
 warnings.filterwarnings('ignore')
 
@@ -27,8 +31,29 @@ class Exp_Main(Exp_Basic):
     def __init__(self, args):
         super(Exp_Main, self).__init__(args)
         # self.df = get_electricity_df() if args.data == 'other' else None
-        self.df = pd.read_csv('./dataset/all.csv')
-        self.users = self.df.user.unique() if args.data == 'otehr' else None
+        self.df = pd.read_csv('./dataset/all.csv', index_col=0)
+        self.users = self.df.user.unique() if args.data == 'other' else None
+        self.labels = np.array([
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 0, 0, 0, 0, 0, 0, 2, 2, 
+        0, 0, 0, 0, 2, 0, 0, 0, 2, 0, 2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 
+        0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 
+        2, 1, 2, 2, 2, 2, 2, 0, 1, 1, 1, 0, 1, 1, 1, 0, 0, 0, 2, 2, 
+        1, 1, 2, 0, 2, 1, 1, 1, 1, 1, 2, 0, 1, 0, 1, 1, 1, 1, 1, 2, 
+        2, 1, 2, 0, 2, 2, 2, 1, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 
+        1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 
+        1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 
+        1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 
+        1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 
+        1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 
+        0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 
+        1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 
+        0, 1, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 2, 1, 1, 1, 1, 1, 0, 1, 
+        1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0, 1, 2, 1
+        ])
+
+        # self.users = self.users[self.labels == 2]
+        self.df = self.df[self.df.user.isin(self.users)]
 
     def _build_model(self):
         model_dict = {
@@ -40,6 +65,12 @@ class Exp_Main(Exp_Basic):
             'Linear': Linear,
         }
         model = model_dict[self.args.model].Model(self.args).float()
+        for (k, v) in model.named_parameters():
+            print(k, v.shape)
+
+        if self.args.resume is not None:
+            model.load_state_dict(torch.load(self.args.resume))
+            print("load resume model succesfully!")
 
         if self.args.use_multi_gpu and self.args.use_gpu:
             model = nn.DataParallel(model, device_ids=self.args.device_ids)
@@ -50,20 +81,48 @@ class Exp_Main(Exp_Basic):
         return data_set, data_loader
 
     def _select_optimizer(self):
-        model_optim = optim.Adam(self.model.parameters(), lr=self.args.learning_rate)
+        series_parameters = list()
+        date_parameters = list()
+        for name, param in self.model.named_parameters():
+            if 'date' in name:
+                date_parameters.append(param)
+            else:
+                series_parameters.append(param)
+
+        model_optim = optim.AdamW([
+            {'params': series_parameters},
+            {'params': date_parameters, 'lr': 1 * self.args.learning_rate}
+        ], lr=self.args.learning_rate)
+        # model_optim = optim.Adam(self.model.parameters(), lr=self.args.learning_rate)
         return model_optim
 
-    def _select_criterion(self):
-        # criterion = nn.MSELoss()
-        def MAPE(pred_batch, y_batch):
-            mape = torch.mean(torch.abs(pred_batch - y_batch) / (y_batch + 1e-1))
+    def _MAPE(self, pred_batch, y_batch):
+            mape = torch.mean(torch.abs(pred_batch - y_batch) / (y_batch + 1e-3))
             # print(inverse(y_batch))
             # print((inverse(y_batch) >= 0).all())
             # print(mape)
             return mape
+
+    def _select_criterion(self):
         # criterion = nn.MSELoss()
-        criterion = MAPE
+        criterion = self._MAPE
         return criterion
+
+    def _adjust_learning_rate(self, optimizer, iteration, total_warmup):
+        # warmup
+        if total_warmup > 0:
+            if iteration == 0:
+                for param_group in optimizer.param_groups:
+                    param_group['lr'] = param_group['lr'] / total_warmup
+            elif 1 <= iteration < total_warmup:
+                for param_group in optimizer.param_groups:
+                    param_group['lr'] = param_group['lr'] / iteration * (iteration + 1)
+
+    def _select_lrScheduler(self, optimizer, train_loader):
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, 
+                T_max=(self.args.train_epochs - self.args.warmup) * len(train_loader),
+                eta_min=1e-08)
+        return scheduler
 
     def vali(self, vali_data, vali_loader, criterion):
         '''
@@ -74,6 +133,7 @@ class Exp_Main(Exp_Basic):
         '''
 
         total_loss = []
+        total_mape = []
         self.model.eval()
         with torch.no_grad():
             for i, (batch_x, batch_y, batch_x_mark, batch_y_mark, scale_param) in enumerate(vali_loader):
@@ -111,15 +171,18 @@ class Exp_Main(Exp_Basic):
                 pred = outputs.detach().cpu()
                 true = batch_y.detach().cpu()
 
-                inverse = lambda batch_y: batch_y[:, 0, :] * scale_param[1] + scale_param[0]
-                loss = criterion(inverse(pred), inverse(true))
+                inverse = lambda batch_y: batch_y * scale_param[1].reshape(-1,1,1) + scale_param[0].reshape(-1,1,1)
+                loss = nn.MSELoss()(pred, true)
+                mape = self._MAPE(inverse(pred), inverse(true))
                 # loss = criterion(pred, true)
                 # loss = criterion(pred, true, inverse_transform)
 
                 total_loss.append(loss)
+                total_mape.append(mape)
         total_loss = np.average(total_loss)
+        total_mape = np.average(total_mape)
         self.model.train()
-        return total_loss
+        return total_loss, total_mape
 
     def train(self, setting):
         train_data, train_loader = self._get_data(flag='train')
@@ -142,6 +205,11 @@ class Exp_Main(Exp_Basic):
 
         model_optim = self._select_optimizer()
         criterion = self._select_criterion()
+        lr_scheduler = self._select_lrScheduler(model_optim, train_loader)
+        warmup = 0
+        total_warmup = self.args.warmup * len(train_loader) / self.args.batch_size
+
+        df_mape = pd.DataFrame(columns=['epoch', 'train_mape', 'valid_mape'])
 
         if self.args.use_amp:
             scaler = torch.cuda.amp.GradScaler()
@@ -153,6 +221,11 @@ class Exp_Main(Exp_Basic):
             self.model.train()
             epoch_time = time.time()
             for i, (batch_x, batch_y, batch_x_mark, batch_y_mark, scale_param) in enumerate(train_loader):
+                '''if epoch <= self.args.warmup:
+                    self._adjust_learning_rate(model_optim, warmup, total_warmup)
+                    warmup += 1
+                else:
+                    lr_scheduler.step()'''
 
                 # print(batch_x.shape, batch_x_mark.shape)
                 # print('*****', (inverse_transform(batch_y) >= -0.01).all())
@@ -198,8 +271,10 @@ class Exp_Main(Exp_Basic):
                     outputs = outputs[:, -self.args.pred_len:, f_dim:]
                     batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
 
-                    inverse = lambda batch_y: batch_y[:, 0, :] * scale_param[1] + scale_param[0]
-                    loss = criterion(inverse(outputs), inverse(batch_y))
+                    # print(batch_y.shape, scale_param)
+                    inverse = lambda batch_y: batch_y * scale_param[1].reshape(-1,1,1) + scale_param[0].reshape(-1,1,1)
+                    # loss = criterion(outputs, batch_y)
+                    loss = self._MAPE(inverse(outputs), inverse(batch_y))
                     # loss = criterion(outputs, batch_y)
                     # loss = criterion(outputs, batch_y, inverse_transform)
                     train_loss.append(loss.item())
@@ -222,24 +297,105 @@ class Exp_Main(Exp_Basic):
 
             print("Epoch: {} cost time: {}".format(epoch + 1, time.time() - epoch_time))
             train_loss = np.average(train_loss)
-            vali_loss = self.vali(vali_data, vali_loader, criterion)
-            test_loss = self.vali(test_data, test_loader, criterion)
+            vali_loss, vali_mape = self.vali(vali_data, vali_loader, criterion)
+            test_loss, test_mape = self.vali(test_data, test_loader, criterion)
 
-            print("Epoch: {0}, Steps: {1} | Train Loss: {2:.7f} Vali Loss: {3:.7f} Test Loss: {4:.7f}".format(
-                epoch + 1, train_steps, train_loss, vali_loss, test_loss))
+            print("Epoch: {0}, Steps: {1} | Train Loss: {2:.5f} Vali Loss: {3:.5f}/{4:.5f} Test Loss: {5:.5f}/{6:.5f}".format(
+                epoch + 1, train_steps, train_loss, vali_loss, vali_mape, test_loss, test_mape))
             early_stopping(vali_loss, self.model, path)
             if early_stopping.early_stop:
                 print("Early stopping")
                 break
-
+            
+            df_mape.loc[len(df_mape)] = [i, train_loss, vali_mape]
             adjust_learning_rate(model_optim, epoch + 1, self.args)
 
         best_model_path = path + '/' + 'checkpoint.pth'
         self.model.load_state_dict(torch.load(best_model_path))
 
+        '''df_mape.to_csv('./dataset/mape.csv')
+        fig, ax = plt.subplots(1,1,figsize=(6,10))
+        sns.lineplot(x='epoch', y=['train_mape', 'valid_mape'], data=df_mape)
+        plt.show()'''
         return self.model
 
-    def test(self, setting, test=0):
+    def test(self, setting):
+        self.model.eval()
+        criterion = self._select_criterion()
+
+        step = self.args.step
+        pred_df = self.df[pd.to_datetime(self.df.date).dt.year==2014].copy(deep=True)
+        all_pred = []
+        mape_all = []
+        with torch.no_grad():
+            for user in self.users:
+                pred = np.array([])
+                print(f'Test user {user}')
+                
+                test_data = Dataset_Electricity(self.df, flag='test', 
+                    size=[self.args.seq_len, self.args.label_len, 0], # self.args.pred_len], 
+                    features='S', user=user, target='sum_per_day', scale=True, timeenc=1, freq='D')
+                test_loader = DataLoader(test_data, batch_size=1, shuffle=False, num_workers=1, drop_last=False)
+                print(len(test_loader))
+                
+                # print(self.vali(test_data, test_loader, self._MAPE))
+                # mape_user = []
+                for i, (x, y, x_date, y_date, scale_param) in enumerate(test_loader):
+                    # scale_param_user = scale_param
+                    if i % step != 0:
+                        continue
+                    replace = min(i, self.args.pred_len)
+
+                    x_val = x.detach().numpy().reshape(-1)
+                    if replace > 0:
+                        x_val[-replace: ] = pred[-replace: ]
+                    x = torch.tensor(x_val.reshape(1, -1, 1), requires_grad=False, dtype=x.dtype)
+                    
+                    x = x.float().to(self.device)
+                    y = y.float().to(self.device)
+                    x_date = x_date.float().to(self.device)
+                    y_date = y_date.float().to(self.device)
+
+                    y_pred = self.model(x, x_date)
+
+                    # print(y_pred.shape, y.shape)
+
+                    inverse = lambda batch_y: batch_y * scale_param[1].reshape(-1,1,1) + scale_param[0].reshape(-1,1,1)
+                    # mape = self._MAPE(inverse(y_pred), inverse(y))
+                    # mape = criterion(y_pred*scale_param[1]+scale_param[0], y[:, -self.args.pred_len]*scale_param[1]+scale_param[0]).item()
+                    # print(mape)
+
+                    # mape_user.append(mape)
+                    
+                    pred = np.concatenate([pred, (y_pred).reshape(-1).detach().numpy()[:step]])
+                    # print(pred.shape)
+                    # print(x.shape, y.shape, x_date.shape, y_date.shape)
+                    # print((y[0,-self.args.pred_len:]*scale_param[1]+scale_param[0]))
+                    # print(self.df[(self.df.user==user) & (pd.to_datetime(self.df.date).dt.year==2014) ])
+                pred = torch.tensor(pred)
+                pred = inverse(pred[:self.args.test_size])
+                truth = self.df[(self.df.user==user) & (pd.to_datetime(self.df.date).dt.year==2014)].sum_per_day.values
+
+                # print(pred.shape)
+                # pred_df[pred_df.user == user].sum_per_day.values = pred.values
+                # print(all_pred, pred.detach().numpy())
+                all_pred = all_pred + list(pred.detach().numpy().reshape(-1))
+
+                mape_user = self._MAPE(torch.tensor(pred), torch.tensor(truth))
+                print(len(all_pred))
+                
+                mape_all.append(mape_user.item())
+                print(mape_all[-1])
+                # break
+            
+            pred_df['pred'] = all_pred
+            pred_df.to_csv(f'./dataset/pred_pl{self.args.pred_len}_step{step}_mape{np.mean(mape_all)}.csv')
+            print(np.mean(mape_all))
+
+
+
+
+    def _test(self, setting, test=0):
         test_data, test_loader = self._get_data(flag='test')
         
         if test:
@@ -277,7 +433,7 @@ class Exp_Main(Exp_Basic):
                                 outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
                 else:
                     if 'Linear' in self.args.model:
-                            outputs = self.model(batch_x)
+                            outputs = self.model(batch_x, batch_x_mark)
                     else:
                         if self.args.output_attention:
                             outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)[0]
@@ -330,7 +486,7 @@ class Exp_Main(Exp_Basic):
         f.close()
 
         # np.save(folder_path + 'metrics.npy', np.array([mae, mse, rmse, mape, mspe,rse, corr]))
-        np.save(folder_path + 'pred.npy', preds)
+        # np.save(folder_path + 'pred.npy', preds)
         # np.save(folder_path + 'true.npy', trues)
         # np.save(folder_path + 'x.npy', inputx)
         return

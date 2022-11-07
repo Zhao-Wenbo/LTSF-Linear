@@ -368,9 +368,12 @@ class Dataset_Electricity(Dataset):
         cols.remove('date')
         df_raw = df_raw[['date'] + cols + [self.target]]'''
         # print(cols)
-        num_train = int(len(df_raw) * 0.7)
-        num_test = int(len(df_raw) * 0.2)
-        num_vali = len(df_raw) - num_train - num_test
+        num_test = 365
+        num_train = int((len(df_raw) - num_test) * 0.8)
+        num_vali = len(df_raw) - num_test - num_train
+        # num_train = int(len(df_raw) * 0.7)
+        # num_test = int(len(df_raw) * 0.2)
+        # num_vali = len(df_raw) - num_train - num_test
 
         border1s = [0, num_train - self.seq_len, len(df_raw) - num_test - self.seq_len]
         border2s = [num_train, num_train + num_vali, len(df_raw)]
@@ -393,7 +396,11 @@ class Dataset_Electricity(Dataset):
             data = self.scaler.transform(df_data.values)
         else:
             data = df_data.values
-        
+
+        self.normalized_df = df_raw.iloc[border1s[0]:border2s[1]]
+        self.normalized_df.sum_per_day = data[border1s[0]:border2s[1]]
+        # self.normalized_df.user = self.user
+        # self.normalized_df.date = self.df.date[border1s[0]:border2s[0]]
 
         self.scaler_mean = torch.tensor(self.scaler.mean_, requires_grad=False)
         self.scaler_std = torch.tensor(self.scaler.scale_, requires_grad=False)
@@ -409,6 +416,8 @@ class Dataset_Electricity(Dataset):
         elif self.timeenc == 1:
             data_stamp = time_features(pd.to_datetime(df_stamp['date'].values), freq=self.freq)
             data_stamp = data_stamp.transpose(1, 0)
+            data_year = pd.to_datetime(df_stamp['date']).dt.year.values.reshape(-1,1) - 2012
+            data_stamp = np.concatenate([np.sin(data_stamp * 2), np.cos(data_stamp * 2), data_year], axis=1)
 
         # data = np.concatenate((data[border1:border2], data_stamp), axis=1)
         # self.data_x = np.concatenate((data[border1:border2], data_stamp), axis=1)

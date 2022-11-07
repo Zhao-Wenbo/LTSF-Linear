@@ -18,9 +18,13 @@ python run_longExp.py \
   --data other \
   --features S \
   --seq_len $seq_len \
-  --label_len 30 \
-  --pred_len 90 \
+  --label_len 0 \
+  --pred_len 30 \
   --enc_in 128 \
   --des 'Exp' \
   --freq D \
-  --itr 1 --batch_size 16  --learning_rate 0.01
+  --step 10 \
+  --itr 1 --batch_size 16  --learning_rate 4e-3 \
+  # --resume ./checkpoints/Electricity_180_96_DLinear_other_ftS_sl180_ll0_pl10_dm512_nh8_el2_dl1_df2048_fc1_ebtimeF_dtTrue_Exp_0/mape_0.10.pth
+  # --resume ./checkpoints/Electricity_180_96_DLinear_other_ftS_sl180_ll30_pl90_dm512_nh8_el2_dl1_df2048_fc1_ebtimeF_dtTrue_Exp_0/1016_sincos_y_nobias_0.0732.pth
+

@@ -5,3 +5,4 @@ dataset
 test.py
 test_results*
 *.npy
+*checkpoint*
